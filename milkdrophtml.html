@@ -1,0 +1,814 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dynamic MilkDrop Visualizer</title>
+  <style>
+
+    :root{--bg:#0b0c10;--accent:#6be;--muted:#9aa}
+    html,body{height:100%;margin:0;background:var(--bg);color:#e6eef8;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    .app{display:grid;grid-template-rows:auto 1fr;gap:12px;padding:14px;box-sizing:border-box;height:100%}
+    header{display:flex;gap:8px;align-items:center; flex-wrap: wrap;}
+    header h1{font-size:16px;margin:0}
+    .controls{display:flex;gap:8px;align-items:center;margin-left:auto; flex-wrap: wrap;}
+    button,input[type=file],select{background:transparent;border:1px solid rgba(255,255,255,0.08);padding:8px 10px;border-radius:8px;color:inherit; transition: all 0.2s;}
+    button:hover{filter:brightness(1.15); border-color: var(--accent);}
+    canvas{width:100%;height:100%;display:block;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,0.6)}
+    .footer{font-size:12px;opacity:0.9;margin-top:6px}
+    .sliders{display:flex;gap:16px;align-items:center; flex-wrap: wrap;}
+    label{font-size:12px;color:var(--muted); display: flex; flex-direction: column;}
+    input[type=range]{width:100px; -webkit-appearance: none; appearance: none; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px;}
+    input[type=range]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--accent);
+        cursor: pointer;
+    }
+    .hint{font-size:12px;color:var(--muted)}
+    .left-col{display:flex;gap:8px;align-items:center; flex-wrap: wrap;}
+    #color_preset, #saved_audio_list {
+        color: #0b0c10; 
+        background-color: #f0f0f0;
+        border-radius: 4px; 
+        padding: 3px 6px;
+        font-size: 12px;
+        border: 1px solid #ccc;
+        height: 30px;
+        appearance: none;
+        -webkit-appearance: none;
+        min-width: 180px; 
+    }
+    #save_current_audio {
+        border-color: #4a90e2;
+        color: #4a90e2;
+    }
+    #delete_selected_audio {
+        border-color: #e24a4a;
+        color: #e24a4a;
+    }
+
+    @media (max-width: 1000px) {
+        header { flex-direction: column; align-items: flex-start; }
+        .controls { margin-left: 0; width: 100%; }
+        .left-col { flex-wrap: wrap; gap: 4px; }
+        .sliders { flex-wrap: wrap; gap: 8px; }
+        input[type=range] { width: 80px; }
+        label { margin-top: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Dynamic MilkDrop Visualizer</h1>
+      <div class="controls">
+        <div class="left-col">
+          <input id="file" type="file" accept="audio/*" />
+          <button id="mic">Use Microphone</button>
+          <button id="play">Play / Pause</button>
+
+          <select id="saved_audio_list" title="Select a saved audio file"></select>
+          <button id="save_current_audio" title="Save the currently loaded audio file (max 32)">Save Current Audio</button>
+          <button id="delete_selected_audio" title="Delete the selected audio from storage">Delete Selected</button>
+        </div>
+        <div class="sliders">
+          <label>Color Preset
+            <select id="color_preset">
+                <option value="0">Default Cycle</option>
+                <option value="1">Cool Blues</option>
+                <option value="2">Warm Reds</option>
+                <option value="3">Neon Green</option>
+            </select>
+          </label>
+          <label>Intensity <input id="intensity" type="range" min="0" max="3" step="0.01" value="1.0"></label>
+          <label>Speed <input id="speed" type="range" min="0" max="3" step="0.01" value="1.0"></label>
+          <label>Color Speed <input id="color_speed" type="range" min="0" max="3" step="0.01" value="0.0"></label>
+          <label>Volume (Boost) <input id="volume" type="range" min="0.0" max="2.0" step="0.01" value="1.0"></label>
+          <label>Balance <input id="balance" type="range" min="-1" max="1" step="0.01" value="0.0"></label>
+          <button id="reset_balance" style="align-self: flex-end; padding: 7px 10px; margin-bottom: 3px;">Reset Balance</button>
+        </div>
+      </div>
+    </header>
+    <main style="min-height:0;">
+      <canvas id="gl" width="1280" height="720"></canvas>
+      <div class="footer">
+        <span class="hint">Initializing...</span>
+      </div>
+    </main>
+  </div>
+<script>
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl');
+if(!gl) console.error('WebGL not supported — try a modern browser');
+
+let audioCtx = null;
+let sourceNode = null;
+let analyser = null;
+let gainNode = null;
+let pannerNode = null;
+let dataArray = null;
+let audioEl = null;
+let micStream = null;
+let playing = false;
+
+const MAX_SAVED_AUDIO = 32; 
+
+let currentAudioBlob = null; 
+let currentAudioName = 'File Loaded'; 
+const DB_NAME = 'VisualizerDB';
+const STORE_NAME = 'audioStore';
+
+const fileInput = document.getElementById('file');
+const micBtn = document.getElementById('mic');
+const playBtn = document.getElementById('play');
+
+const savedAudioList = document.getElementById('saved_audio_list');
+const saveCurrentAudioBtn = document.getElementById('save_current_audio');
+const deleteSelectedAudioBtn = document.getElementById('delete_selected_audio');
+
+const intensityControl = document.getElementById('intensity');
+const speedControl = document.getElementById('speed');
+const colorSpeedControl = document.getElementById('color_speed');
+const volumeControl = document.getElementById('volume');
+const balanceControl = document.getElementById('balance');
+const resetBalanceBtn = document.getElementById('reset_balance'); 
+const colorPresetControl = document.getElementById('color_preset'); 
+const SPECTRUM_SIZE = 512;
+const STORAGE_KEY = 'visualizerSettings';
+
+function getSettingsData() {
+    return {
+        intensity: parseFloat(intensityControl.value),
+        speed: parseFloat(speedControl.value),
+        color_speed: parseFloat(colorSpeedControl.value),
+        volume: parseFloat(volumeControl.value),
+        balance: parseFloat(balanceControl.value),
+        color_preset: parseFloat(colorPresetControl.value)
+    };
+}
+
+function saveSettingsLocal() {
+    try {
+        const settings = getSettingsData();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+
+    } catch (e) {
+        console.error("Error saving settings to localStorage:", e);
+    }
+}
+
+function loadSettingsLocal() {
+    try {
+        const storedSettings = localStorage.getItem(STORAGE_KEY);
+        if (storedSettings) {
+            const settings = JSON.parse(storedSettings);
+
+            intensityControl.value = settings.intensity;
+            speedControl.value = settings.speed;
+            colorSpeedControl.value = settings.color_speed;
+            volumeControl.value = settings.volume;
+            balanceControl.value = settings.balance;
+            colorPresetControl.value = settings.color_preset;
+
+            if(gainNode) gainNode.gain.value = settings.volume;
+            if(pannerNode) pannerNode.pan.value = settings.balance;
+
+            document.querySelector('.footer .hint').textContent = 'Visual settings loaded from local storage.';
+        } else {
+            document.querySelector('.footer .hint').textContent = 'Welcome! Using default visual settings.';
+        }
+    } catch (e) {
+        console.error("Error loading settings from localStorage:", e);
+        document.querySelector('.footer .hint').textContent = 'Warning: Could not load settings. Using defaults.';
+    }
+}
+
+function openDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, 2); 
+
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+
+            if (event.oldVersion < 2 && db.objectStoreNames.contains(STORE_NAME)) {
+                db.deleteObjectStore(STORE_NAME);
+            }
+
+            db.createObjectStore(STORE_NAME, { keyPath: 'name' });
+        };
+
+        request.onsuccess = (event) => {
+            resolve(event.target.result);
+        };
+
+        request.onerror = (event) => {
+            console.error('IndexedDB error:', event.target.errorCode);
+            reject('IndexedDB error: ' + event.target.errorCode);
+        };
+    });
+}
+
+async function getSavedAudioList() {
+    try {
+        const db = await openDB();
+        const transaction = db.transaction([STORE_NAME], 'readonly');
+        const store = transaction.objectStore(STORE_NAME);
+
+        const request = store.getAll();
+
+        const data = await new Promise((resolve, reject) => {
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = (event) => reject(event.target.error);
+        });
+
+        return data.sort((a, b) => b.timestamp - a.timestamp);
+
+    } catch (e) {
+        console.error("Error fetching audio list:", e);
+        return [];
+    }
+}
+
+async function saveAudioToDB(audioName) {
+    if (!currentAudioBlob) {
+        document.querySelector('.footer .hint').textContent = 'Error: No audio file loaded to save.';
+        return;
+    }
+
+    if (audioEl && !audioEl.paused) stopFile();
+
+    try {
+        let currentList = await getSavedAudioList();
+
+        if (currentList.length >= MAX_SAVED_AUDIO) {
+
+            const oldest = currentList[currentList.length - 1];
+            await deleteAudioFromDB(oldest.name, false); 
+            document.querySelector('.footer .hint').textContent = `Max limit (${MAX_SAVED_AUDIO}) reached. Deleted oldest file: ${oldest.name}.`;
+        }
+
+        const db = await openDB();
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+
+        const dataToSave = {
+            name: audioName, 
+            blob: currentAudioBlob,
+            timestamp: Date.now()
+        };
+
+        const request = store.put(dataToSave); 
+
+        await new Promise((resolve, reject) => {
+            request.onsuccess = resolve;
+            request.onerror = (event) => reject(event.target.error);
+        });
+
+        await loadAudioListAndAutoLoad(false); 
+
+        if (savedAudioList.querySelector(`option[value="${audioName}"]`)) {
+            savedAudioList.value = audioName;
+        }
+
+        document.querySelector('.footer .hint').textContent = `Audio file "${audioName}" successfully saved (Count: ${currentList.length+1}).`;
+    } catch (e) {
+        console.error("Error saving audio to IndexedDB:", e);
+        document.querySelector('.footer .hint').textContent = 'Error saving audio to IndexedDB. See console for details.';
+    }
+}
+
+async function loadAudioFromDB(audioName, autoPlay = true) {
+    if (!audioName) {
+        document.querySelector('.footer .hint').textContent = 'No audio name provided for loading.';
+        return false;
+    }
+    try {
+        const db = await openDB();
+        const transaction = db.transaction([STORE_NAME], 'readonly');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.get(audioName);
+
+        const data = await new Promise((resolve, reject) => {
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = (event) => reject(event.target.error);
+        });
+
+        if (data && data.blob) {
+            await loadBlob(data.blob, data.name, autoPlay); 
+            document.querySelector('.footer .hint').textContent = `${autoPlay ? 'Playing' : 'Ready'}: Loaded saved audio: ${data.name}.`;
+            return true;
+        } else {
+            document.querySelector('.footer .hint').textContent = `Audio file "${audioName}" not found in IndexedDB.`;
+            return false;
+        }
+
+    } catch (e) {
+        console.error("Error loading audio from IndexedDB:", e);
+        document.querySelector('.footer .hint').textContent = 'Error loading audio from IndexedDB. See console for details.';
+        return false;
+    }
+}
+
+async function deleteAudioFromDB(audioName, updateUI = true) {
+    if (!audioName) return;
+
+    try {
+        const db = await openDB();
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.delete(audioName);
+
+        await new Promise((resolve, reject) => {
+            request.onsuccess = resolve;
+            request.onerror = (event) => reject(event.target.error);
+        });
+
+        if (updateUI) {
+
+            if (audioEl && audioEl.getAttribute('data-filename') === audioName) {
+                stopFile();
+                currentAudioBlob = null;
+                currentAudioName = 'File Loaded';
+            }
+            await loadAudioListAndAutoLoad(false);
+            document.querySelector('.footer .hint').textContent = `Audio file "${audioName}" deleted from storage.`;
+        }
+    } catch (e) {
+        console.error("Error deleting audio from IndexedDB:", e);
+        if (updateUI) {
+            document.querySelector('.footer .hint').textContent = 'Error deleting audio from storage. See console for details.';
+        }
+    }
+}
+
+function populateAudioList(audioList) {
+    savedAudioList.innerHTML = '<option value="" disabled selected>-- Select Saved Audio --</option>';
+    if (audioList.length === 0) {
+        savedAudioList.disabled = true;
+        deleteSelectedAudioBtn.disabled = true;
+        return;
+    }
+
+    savedAudioList.disabled = false;
+    deleteSelectedAudioBtn.disabled = false;
+
+    audioList.forEach(item => {
+        const option = document.createElement('option');
+        const date = new Date(item.timestamp).toLocaleTimeString();
+        option.value = item.name;
+        option.textContent = `${item.name} (${date})`;
+        savedAudioList.appendChild(option);
+    });
+}
+
+async function loadAudioListAndAutoLoad(autoPlay = false) {
+    const list = await getSavedAudioList();
+    populateAudioList(list);
+
+    if (list.length > 0) {
+
+        const latestAudioName = list[0].name;
+        savedAudioList.value = latestAudioName; 
+        await loadAudioFromDB(latestAudioName, autoPlay); 
+        return true;
+    }
+    return false;
+}
+
+function resize() {
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const w = Math.floor(canvas.clientWidth * dpr);
+  const h = Math.floor(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+    gl.viewport(0,0,w,h);
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+function compileShader(src, type){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s));
+    throw new Error('Shader compile error: ' + gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+const vs = `
+attribute vec2 a; 
+varying vec2 v; 
+void main(){ 
+  v=a*0.5+0.5; 
+  gl_Position=vec4(a,0.,1.);
+} 
+`;
+
+const fs = `
+precision mediump float;
+uniform float u_time;
+uniform vec2 u_res;
+uniform sampler2D u_spectrum;
+uniform float u_intensity;
+uniform float u_speed;
+uniform float u_color_speed; 
+uniform float u_color_preset; 
+varying vec2 v;
+
+float hash21(vec2 p){
+    p=fract(p*vec2(123.34,456.21)); 
+    p += dot(p,p+45.32); 
+    return fract(p.x*p.y);
+}
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+vec3 palette(float t, float time_offset) {
+    float base_hue = 0.0;
+    float sat_mult = 1.0;
+
+    if (u_color_preset == 1.0) { 
+        base_hue = 0.55; 
+        sat_mult = 1.1;
+    } else if (u_color_preset == 2.0) { 
+        base_hue = 0.95; 
+        sat_mult = 1.0;
+    } else if (u_color_preset == 3.0) { 
+        base_hue = 0.3; 
+        sat_mult = 1.2;
+    } 
+
+    float hue_spatial = t * 0.2;
+    if (u_color_preset != 0.0) {
+        hue_spatial *= 0.1; 
+    }
+
+    float hue = fract(base_hue + hue_spatial + time_offset); 
+
+    float sat = clamp(0.8 + 0.2 * t * sat_mult, 0.0, 1.0); 
+    float val = clamp(0.3 + 0.7 * t, 0.0, 1.0); 
+
+    return hsv2rgb(vec3(hue, sat, val));
+}
+
+void main(){
+  vec2 uv = (v * u_res - 0.5*u_res) / min(u_res.x,u_res.y);
+  float t = u_time * u_speed;
+
+  float bandLow = texture2D(u_spectrum, vec2(0.02,0.0)).r;
+  float bandMid = texture2D(u_spectrum, vec2(0.08,0.0)).r;
+  float bandHigh = texture2D(u_spectrum, vec2(0.25,0.0)).r;
+
+  float ang = atan(uv.y, uv.x);
+  float r = length(uv);
+
+  float distort_mag = bandMid * 0.3 + bandLow * 0.1;
+  ang += sin(r * 5.0 - t * 1.5) * distort_mag;
+  r += cos(ang * 4.0 + t * 0.5) * distort_mag * 0.5;
+
+  vec2 d_uv = vec2(cos(ang)*r, sin(ang)*r);
+
+  float ripple = sin((r*12.0 - t*4.0) + bandLow*40.0) * exp(-r*3.0);
+  float swirl = sin(ang*6.0 + t*2.0 + bandMid*30.0) * 0.3;
+  float bands = smoothstep(0.2, 0.0, abs(fract(d_uv.x*3.0 + t*0.4 + bandHigh*10.0)-0.5));
+
+  float vcol = ripple * (0.6 + bandMid*1.5) + swirl + bands * (0.5 + bandHigh*1.2);  
+  vcol *= u_intensity;
+
+  float time_offset = fract(u_time * u_color_speed * 0.1);
+  vec3 col = palette(clamp(0.5 + vcol, 0.0, 1.0), time_offset);
+
+  float vig = smoothstep(0.9, 0.2, r);  
+  col *= vig;
+
+  float grain = (hash21(gl_FragCoord.xy + floor(t*10.0)) - 0.5) * 0.03;  
+  col += grain;
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+const prog = gl.createProgram();
+const a = compileShader(vs, gl.VERTEX_SHADER);
+const b = compileShader(fs, gl.FRAGMENT_SHADER);
+gl.attachShader(prog, a); gl.attachShader(prog, b); gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+  console.error(gl.getProgramInfoLog(prog));
+  throw new Error('Program link error');
+}
+gl.useProgram(prog);
+
+const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+const verts = new Float32Array([-1,-1,  1,-1,  -1,1,  1,1]);
+gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+const locA = gl.getAttribLocation(prog, 'a');
+gl.enableVertexAttribArray(locA); gl.vertexAttribPointer(locA,2,gl.FLOAT,false,0,0);
+
+const u_time = gl.getUniformLocation(prog, 'u_time');
+const u_res = gl.getUniformLocation(prog, 'u_res');
+const u_spectrum = gl.getUniformLocation(prog, 'u_spectrum');
+const u_intensity = gl.getUniformLocation(prog, 'u_intensity');
+const u_speed = gl.getUniformLocation(prog, 'u_speed');
+const u_color_speed = gl.getUniformLocation(prog, 'u_color_speed'); 
+const u_color_preset = gl.getUniformLocation(prog, 'u_color_preset'); 
+
+const spectrumTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, spectrumTex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+let empty = new Uint8Array(SPECTRUM_SIZE);
+for(let i=0;i<SPECTRUM_SIZE;i++) empty[i]=0;
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, SPECTRUM_SIZE, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, empty);
+
+gl.activeTexture(gl.TEXTURE0);
+gl.uniform1i(u_spectrum, 0);
+
+let start = performance.now();
+
+function ensureAudio(){
+  if(!audioCtx){
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = SPECTRUM_SIZE*2; 
+    const bufferLength = analyser.frequencyBinCount;
+    dataArray = new Uint8Array(bufferLength);
+
+    gainNode = audioCtx.createGain();
+    pannerNode = audioCtx.createStereoPanner(); 
+
+    analyser.connect(gainNode);
+    gainNode.connect(pannerNode);
+    pannerNode.connect(audioCtx.destination);
+
+    gainNode.gain.value = parseFloat(volumeControl.value);
+    pannerNode.pan.value = parseFloat(balanceControl.value);
+
+    volumeControl.addEventListener('input', () => {
+        if(gainNode) gainNode.gain.value = parseFloat(volumeControl.value);
+        saveSettingsLocal();
+    });
+
+    balanceControl.addEventListener('input', () => {
+        if(pannerNode) pannerNode.pan.value = parseFloat(balanceControl.value);
+        document.querySelector('.footer .hint').textContent = `Audio Balance set to: ${balanceControl.value}.`;
+        saveSettingsLocal();
+    });
+  }
+}
+
+function handleAudioError(e) {
+    console.error('Audio playback failed:', e);
+    document.querySelector('.footer .hint').textContent = 'Error playing audio. Please try again or check console for details.';
+    stopFile();
+    playBtn.textContent = 'Play / Pause';
+}
+
+async function loadBlob(fileBlob, fileName, autoPlay = true) {
+  stopMic();
+  if(audioEl){ 
+    audioEl.pause(); 
+    URL.revokeObjectURL(audioEl.src); 
+    audioEl.src = ''; 
+    audioEl.remove(); 
+    audioEl = null; 
+  }
+
+  currentAudioBlob = fileBlob;
+  currentAudioName = fileName;
+
+  const url = URL.createObjectURL(fileBlob);
+  audioEl = new Audio(url);
+  audioEl.crossOrigin = 'anonymous';
+  audioEl.loop = true;
+
+  ensureAudio();
+  if(sourceNode) sourceNode.disconnect();
+
+  sourceNode = audioCtx.createMediaElementSource(audioEl);
+  sourceNode.connect(analyser);
+
+  try {
+    if (autoPlay) {
+        await audioEl.play(); 
+        if (audioCtx.state === 'suspended') { audioCtx.resume(); }
+        playing = true;
+        playBtn.textContent = 'Pause';
+    } else {
+        playing = false;
+        playBtn.textContent = 'Play';
+    }
+
+    audioEl.setAttribute('data-filename', fileName); 
+    audioEl.setAttribute('data-source', fileBlob instanceof File ? 'input' : 'indexeddb');
+    document.querySelector('.footer .hint').textContent = `${autoPlay ? 'Playing' : 'Ready'}: **${fileName}**.`;
+  } catch (e) {
+    handleAudioError(e);
+  }
+}
+
+async function loadFile(file){
+
+    await loadBlob(file, file.name);
+}
+
+async function startMic(){
+  stopFile();
+  if(micStream) { 
+    stopMic();
+    micBtn.textContent='Use Microphone';
+    document.querySelector('.footer .hint').textContent = 'Microphone stopped.';
+    return;
+  }
+
+  try{
+    const s = await navigator.mediaDevices.getUserMedia({audio:true});
+    micStream = s;
+    ensureAudio();
+    if (audioCtx.state === 'suspended') { audioCtx.resume(); }
+    if(sourceNode) sourceNode.disconnect();
+
+    sourceNode = audioCtx.createMediaStreamSource(s);
+    sourceNode.connect(analyser);
+
+    playing = true;
+    micBtn.textContent='Stop Mic';
+    document.querySelector('.footer .hint').textContent = 'Using Microphone Input.';
+  }catch(e){
+    document.querySelector('.footer .hint').textContent = 'Microphone access denied or unavailable.';
+    console.error('Mic access error:', e);
+  }
+}
+
+function stopMic(){
+  if(micStream){
+    micStream.getTracks().forEach(t=>t.stop()); micStream = null; playing=false;
+    micBtn.textContent='Use Microphone';
+
+  }
+}
+function stopFile(){
+  if(audioEl){ 
+    audioEl.pause(); 
+    URL.revokeObjectURL(audioEl.src); 
+    audioEl.src=''; 
+    audioEl=null; 
+    playing=false; 
+    playBtn.textContent = 'Play / Pause';
+  }
+}
+
+function handleSaveCurrentAudio() {
+    if (!currentAudioBlob) {
+        document.querySelector('.footer .hint').textContent = 'Error: No audio file currently loaded to save.';
+        return;
+    }
+
+    const promptMessage = `Enter a name to save the current audio file (${currentAudioName.substring(0, 20)}...):`;
+    const audioName = window.prompt(promptMessage, currentAudioName.substring(0, 50).replace(/\.[^/.]+$/, "")); 
+
+    if (audioName && audioName.trim() !== '') {
+        const sanitizedName = audioName.trim().replace(/[^\w\s-]/g, '').substring(0, 50);
+        saveAudioToDB(sanitizedName || 'Unnamed Audio');
+    } else if (audioName !== null) {
+        document.querySelector('.footer .hint').textContent = 'Save cancelled. Please enter a valid name.';
+    }
+}
+
+function handleLoadSelectedAudio() {
+    const selectedName = savedAudioList.value;
+    if (selectedName) {
+        loadAudioFromDB(selectedName, true); 
+    }
+}
+
+async function handleDeleteSelectedAudio() {
+    const selectedName = savedAudioList.value;
+    if (!selectedName) {
+        document.querySelector('.footer .hint').textContent = 'Error: Please select an audio file to delete.';
+        return;
+    }
+
+    if (window.confirm(`Are you sure you want to delete the saved audio: "${selectedName}"?`)) {
+        await deleteAudioFromDB(selectedName, true);
+    }
+}
+
+const controlsToSave = [
+    intensityControl, speedControl, colorSpeedControl, 
+    colorPresetControl
+];
+controlsToSave.forEach(control => {
+    control.addEventListener('input', saveSettingsLocal);
+});
+
+fileInput.addEventListener('change', (e)=>{
+  const f = e.target.files && e.target.files[0];
+  if(f) loadFile(f);
+});
+
+micBtn.addEventListener('click', startMic);
+saveCurrentAudioBtn.addEventListener('click', handleSaveCurrentAudio);
+savedAudioList.addEventListener('change', handleLoadSelectedAudio);
+deleteSelectedAudioBtn.addEventListener('click', handleDeleteSelectedAudio);
+
+resetBalanceBtn.addEventListener('click', () => {
+    balanceControl.value = '0.0';
+    if(pannerNode) pannerNode.pan.value = 0.0; 
+    document.querySelector('.footer .hint').textContent = 'Audio Balance reset to center (0.0).';
+    saveSettingsLocal();
+});
+
+playBtn.addEventListener('click', ()=>{
+  if(!audioEl && !micStream){ 
+    document.querySelector('.footer .hint').textContent = 'Pick an audio file or enable the microphone first.';
+    return; 
+  }
+
+  ensureAudio(); 
+  if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+
+  if(audioEl){
+    if(audioEl.paused){ 
+      audioEl.play().then(() => {
+        playing=true;
+        playBtn.textContent = 'Pause';
+        document.querySelector('.footer .hint').textContent = `Playing: ${audioEl.getAttribute('data-filename') || 'File Loaded'}.`;
+      }).catch(handleAudioError);
+    } else { 
+      audioEl.pause(); 
+      playing=false; 
+      playBtn.textContent = 'Play';
+      document.querySelector('.footer .hint').textContent = `Paused: ${audioEl.getAttribute('data-filename') || 'File Loaded'}.`;
+    }
+  } else if (micStream) {
+
+      if (playing) {
+          stopMic();
+      } else {
+          startMic();
+      }
+  }
+});
+
+function render(){
+  resize();
+  const now = performance.now();
+  const time = (now - start)/1000.0;
+
+  if(analyser && dataArray && playing){
+    analyser.getByteFrequencyData(dataArray);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, spectrumTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, SPECTRUM_SIZE, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, dataArray);
+  } else if (analyser && dataArray && !playing) {
+
+    dataArray.fill(0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, spectrumTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, SPECTRUM_SIZE, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, dataArray);
+  }
+
+  gl.useProgram(prog);
+  gl.uniform1f(u_time, time);
+  gl.uniform2f(u_res, canvas.width, canvas.height);
+  gl.uniform1f(u_intensity, parseFloat(intensityControl.value));
+  gl.uniform1f(u_speed, parseFloat(speedControl.value));
+  gl.uniform1f(u_color_speed, parseFloat(colorSpeedControl.value)); 
+  gl.uniform1f(u_color_preset, parseFloat(colorPresetControl.value)); 
+
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(render);
+}
+
+window.addEventListener('load', async () => {
+
+    loadSettingsLocal();
+
+    const audioLoaded = await loadAudioListAndAutoLoad(false);
+
+    requestAnimationFrame(render);
+
+    if (audioLoaded) {
+        document.querySelector('.footer .hint').textContent += ' Click Play to start saved audio.';
+    } else {
+        document.querySelector('.footer .hint').textContent += ' Ready. Load an audio file or use the microphone.';
+    }
+});
+</script>
+</body>
+</html>
