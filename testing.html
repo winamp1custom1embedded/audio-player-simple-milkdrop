@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MilkDrop Visualizer</title>
+<style>
+:root{--bg:#0b0c10;--accent:#6be;--muted:#9aa}
+html,body{height:100%;margin:0;background:var(--bg);color:#e6eef8;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial}
+.app{display:grid;grid-template-rows:auto 1fr auto;gap:12px;padding:14px;height:100%;box-sizing:border-box}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+header h1{font-size:16px;margin:0}
+button,input[type=file],input[type=color]{background:transparent;border:1px solid rgba(255,255,255,0.08);padding:8px 10px;border-radius:8px;color:inherit;cursor:pointer}
+button:hover{filter:brightness(1.15)}
+canvas{width:100%;height:100%;display:block;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,0.6)}
+#audioList{list-style:none;padding:0;margin:0;max-height:150px;overflow-y:auto;}
+#audioList li{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;background:#111;padding:6px 10px;border-radius:6px;}
+.footer{font-size:12px;opacity:0.8;text-align:center}
+.sliders{display:flex;gap:10px;align-items:center}
+label{font-size:12px;color:var(--muted)}
+input[type=range]{width:120px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>MilkDrop Visualizer</h1>
+    <input id="file" type="file" accept="audio/*">
+    <button id="mic">Use Mic</button>
+    <button id="play">Play/Pause</button>
+    <label>Color <input id="color" type="color" value="#6be2ff"></label>
+    <div class="sliders">
+      <label>Intensity <input id="intensity" type="range" min="0" max="3" step="0.01" value="1"></label>
+      <label>Speed <input id="speed" type="range" min="0" max="3" step="0.01" value="1"></label>
+    </div>
+  </header>
+
+  <main style="position:relative;min-height:0;">
+    <canvas id="gl"></canvas>
+  </main>
+
+  <ul id="audioList"></ul>
+  <div class="footer">All audio & settings auto-save in browser (up to 32 files).</div>
+</div>
+
+<script>
+const MAX_AUDIO = 32;
+let db,audioCtx,sourceNode,analyser,dataArray,audioEl;
+
+function openDB(){
+  return new Promise((resolve,reject)=>{
+    const req=indexedDB.open("MilkDropDB",1);
+    req.onupgradeneeded=e=>{
+      const db=e.target.result;
+      if(!db.objectStoreNames.contains("audios"))
+        db.createObjectStore("audios",{keyPath:"id",autoIncrement:true});
+    };
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=e=>reject(e);
+  });
+}
+
+function getAllAudios(){
+  return new Promise(res=>{
+    const tx=db.transaction("audios","readonly");
+    const store=tx.objectStore("audios");
+    const req=store.getAll();
+    req.onsuccess=()=>res(req.result||[]);
+  });
+}
+function addAudio(name,base64){
+  getAllAudios().then(audios=>{
+    if(audios.length>=MAX_AUDIO){alert("Audio limit reached (32)");return;}
+    const tx=db.transaction("audios","readwrite");
+    const store=tx.objectStore("audios");
+    store.add({name,base64});
+    tx.oncomplete=()=>renderAudioList();
+  });
+}
+function deleteAudio(id){
+  const tx=db.transaction("audios","readwrite");
+  tx.objectStore("audios").delete(id);
+  tx.oncomplete=()=>renderAudioList();
+}
+function clearAll(){
+  if(!confirm("Clear all audios?"))return;
+  const tx=db.transaction("audios","readwrite");
+  tx.objectStore("audios").clear();
+  tx.oncomplete=()=>renderAudioList();
+}
+
+const colorPicker=document.getElementById('color');
+const intensityControl=document.getElementById('intensity');
+const speedControl=document.getElementById('speed');
+const saved=JSON.parse(localStorage.getItem('milkdropSettings')||'{}');
+if(saved.color)colorPicker.value=saved.color;
+if(saved.intensity)intensityControl.value=saved.intensity;
+if(saved.speed)speedControl.value=saved.speed;
+function saveSettings(){
+  localStorage.setItem('milkdropSettings',JSON.stringify({
+    color:colorPicker.value,
+    intensity:intensityControl.value,
+    speed:speedControl.value
+  }));
+}
+[colorPicker,intensityControl,speedControl].forEach(e=>e.addEventListener('input',saveSettings));
+
+const fileInput=document.getElementById('file');
+fileInput.addEventListener('change',e=>{
+  const f=e.target.files[0];
+  if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>addAudio(f.name,r.result);
+  r.readAsDataURL(f);
+});
+
+const audioList=document.getElementById('audioList');
+async function renderAudioList(){
+  const audios=await getAllAudios();
+  audioList.innerHTML='';
+  audios.forEach(a=>{
+    const li=document.createElement('li');
+    li.innerHTML=`<span>${a.name}</span>
+      <div>
+        <button onclick="playSaved(${a.id})">Play</button>
+        <button onclick="deleteAudio(${a.id})">Del</button>
+      </div>`;
+    audioList.appendChild(li);
+  });
+  if(audios.length>0){
+    const li=document.createElement('li');
+    li.style.justifyContent='center';
+    const btn=document.createElement('button');
+    btn.textContent='Clear All';
+    btn.onclick=clearAll;
+    li.appendChild(btn);
+    audioList.appendChild(li);
+  }
+}
+
+function ensureAudio(){
+  if(!audioCtx){
+    audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    analyser=audioCtx.createAnalyser();
+    analyser.fftSize=1024;
+    dataArray=new Uint8Array(analyser.frequencyBinCount);
+  }
+}
+
+function loadAudio(base64){
+  if(audioEl){audioEl.pause();audioEl.remove();}
+  audioEl=new Audio(base64);
+  audioEl.loop=true;
+  ensureAudio();
+  if(sourceNode)sourceNode.disconnect();
+  sourceNode=audioCtx.createMediaElementSource(audioEl);
+  sourceNode.connect(analyser);
+  analyser.connect(audioCtx.destination);
+  audioEl.play();
+  startVisualizer();
+}
+
+function playSaved(id){
+  const tx=db.transaction("audios","readonly");
+  const store=tx.objectStore("audios");
+  const req=store.get(id);
+  req.onsuccess=()=>{if(req.result)loadAudio(req.result.base64);}
+}
+
+document.getElementById('mic').onclick=async()=>{
+  ensureAudio();
+  const mic=await navigator.mediaDevices.getUserMedia({audio:true});
+  const src=audioCtx.createMediaStreamSource(mic);
+  src.connect(analyser);
+  startVisualizer();
+};
+document.getElementById('play').onclick=()=>{if(audioEl){audioEl.paused?audioEl.play():audioEl.pause();}};
+
+const canvas=document.getElementById('gl');
+const ctx=canvas.getContext('2d');
+function resize(){canvas.width=canvas.clientWidth;canvas.height=canvas.clientHeight;}
+window.onresize=resize;resize();
+
+let time=0;
+function startVisualizer(){
+  function draw(){
+    requestAnimationFrame(draw);
+    if(!analyser)return;
+    analyser.getByteFrequencyData(dataArray);
+    const color=colorPicker.value;
+    const intensity=parseFloat(intensityControl.value);
+    const speed=parseFloat(speedControl.value);
+    ctx.fillStyle='rgba(0,0,0,0.25)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    const mid=canvas.height/2;
+    ctx.beginPath();
+    for(let x=0;x<canvas.width;x+=4){
+      const i=Math.floor((x/dataArray.length)*dataArray.length);
+      const amp=dataArray[i]/255*intensity*120;
+      const y=mid+Math.sin(x*0.02+time*speed)*amp;
+      if(x===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    }
+    ctx.strokeStyle=color;
+    ctx.lineWidth=2;
+    ctx.shadowColor=color;
+    ctx.shadowBlur=8;
+    ctx.stroke();
+    ctx.shadowBlur=0;
+    time+=0.02;
+  }
+  draw();
+}
+
+openDB().then(r=>{db=r;renderAudioList();});
+</script>
+</body>
+</html>
