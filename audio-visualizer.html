@@ -1,11 +1,11 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Audio Visualizer</title><style>:root{--bg:#0b0c10;--accent:#6be;--muted:#9aa}html,body{height:100%;margin:0;background:var(--bg);color:#e6eef8;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial}.app{display:grid;grid-template-rows:auto 1fr auto;gap:12px;padding:14px;height:100%;box-sizing:border-box}header{display:flex;flex-wrap:wrap;gap:8px;align-items:center}header h1{font-size:16px;margin:0}button,input[type=file],input[type=color]{background:transparent;border:1px solid rgba(255,255,255,0.08);padding:8px 10px;border-radius:8px;color:inherit;cursor:pointer}button:hover{filter:brightness(1.15)}canvas{width:100%;height:100%;display:block;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,0.6)}#audioList{list-style:none;padding:0;margin:0;max-height:150px;overflow-y:auto;}#audioList li{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;background:#111;padding:6px 10px;border-radius:6px;}.footer{font-size:12px;opacity:0.8;text-align:center}.sliders{display:flex;gap:10px;align-items:center; flex-wrap: wrap;}label{font-size:12px;color:var(--muted)}input[type=range]{width:120px}</style></head><body><div class="app">  <header>    <h1>Audio Visualizer</h1>    <input id="file" type="file" accept="audio/*">    <button id="mic">Use Mic</button>    <button id="play">Play/Pause</button>    <label>Color <input id="color" type="color" value="#6be2ff"></label>    <div class="sliders">      <label>Intensity <input id="intensity" type="range" min="0" max="3" step="0.01" value="1"></label>      <label>Speed <input id="speed" type="range" min="0" max="3" step="0.01" value="1"></label>
-      <!-- VOLUME RANGE: 0 to 200 (100 is normal) -->
+
       <label>Volume <input id="volume" type="range" min="0" max="200" step="1" value="100"></label>
       <label>Balance <input id="balance" type="range" min="-1" max="1" step="0.01" value="0"></label>
     </div>  </header>
   <main style="position:relative;min-height:0;">    <canvas id="gl"></canvas>  </main>
   <ul id="audioList"></ul>  
-  <!-- Updated footer to be a dynamic status bar -->
+
   <div class="footer"><span id="status">All settings auto-save in browser. Local audio storage is persistent (up to 32 files).</span></div></div>
 <script>
 const MAX_AUDIO = 32;
@@ -15,13 +15,11 @@ let animationId;
 const statusEl = document.getElementById('status');
 const defaultStatus = 'All settings auto-save in browser. Local audio storage is persistent (up to 32 files).';
 
-// Utility function to show a temporary status message
 function showStatus(message, isError = false) {
     statusEl.textContent = message;
     statusEl.style.color = isError ? '#f87171' : '#a7f3d0';
     statusEl.style.opacity = '1';
 
-    // Reset to default status after 3 seconds
     setTimeout(() => {
         statusEl.textContent = defaultStatus;
         statusEl.style.color = 'inherit';
@@ -29,7 +27,6 @@ function showStatus(message, isError = false) {
     }, 3000);
 }
 
-// --- IndexedDB Functions ---
 function openDB(){
   return new Promise((resolve,reject)=>{
     const req=indexedDB.open("MilkDropDB",1);
@@ -56,7 +53,6 @@ function getAllAudios(){
   });
 }
 
-// UPDATED: Added transaction success/error feedback
 function addAudio(name,base64){
   getAllAudios().then(audios=>{
     if(audios.length>=MAX_AUDIO){
@@ -66,7 +62,7 @@ function addAudio(name,base64){
     }
     const tx=db.transaction("audios","readwrite");
     const store=tx.objectStore("audios");
-    
+
     const request = store.add({name,base64});
 
     tx.oncomplete=()=>{
@@ -101,7 +97,6 @@ function clearAll(){
   };
 }
 
-// --- Settings and UI setup ---
 const colorPicker=document.getElementById('color');
 const intensityControl=document.getElementById('intensity');
 const speedControl=document.getElementById('speed'); 
@@ -110,13 +105,11 @@ const balanceControl=document.getElementById('balance');
 
 const saved=JSON.parse(localStorage.getItem('milkdropSettings')||'{}');
 
-// Explicitly set control values, defaulting to HTML values if not found in localStorage.
 colorPicker.value = saved.color || "#6be2ff";
 intensityControl.value = saved.intensity || "1";
 speedControl.value = saved.speed || "1";
-volumeControl.value = saved.volume || "100"; // Default Volume to 100
-balanceControl.value = saved.balance || "0";  // Default Balance to 0
-
+volumeControl.value = saved.volume || "100"; 
+balanceControl.value = saved.balance || "0";  
 
 function saveSettings(){
   localStorage.setItem('milkdropSettings',JSON.stringify({
@@ -128,29 +121,27 @@ function saveSettings(){
   }));
 }
 
-// Function to apply volume and balance settings to Web Audio Nodes
 function applyAudioSettings() {
     if (gainNode) {
-        // Map UI value (0-200) to actual gain (0-2.0)
+
         gainNode.gain.value = parseFloat(volumeControl.value) / 100;
     }
     if (pannerNode) {
-        // Balance control (-1 to 1)
+
         pannerNode.pan.value = parseFloat(balanceControl.value);
     }
 }
 
-// Attach listeners to all controls, applying snap logic for balance
 [colorPicker,intensityControl,speedControl, volumeControl, balanceControl].forEach(e=>e.addEventListener('input',()=>{
-    // Balance Snap-to-Center Logic
+
     if (e.id === 'balance') {
         let val = parseFloat(balanceControl.value);
-        // If the value is within +/- 0.05 of center, snap it to 0
+
         if (Math.abs(val) < 0.05) { 
             balanceControl.value = 0.00;
         }
     }
-    
+
     saveSettings();
     applyAudioSettings();
 }));
@@ -176,14 +167,13 @@ async function renderAudioList(){
         <button data-id="${a.id}" class="play-btn">Play</button>
         <button data-id="${a.id}" class="delete-btn">Del</button>
       </div>`;
-      
-    // Use JavaScript listeners for robustness
+
     li.querySelector('.play-btn').addEventListener('click', () => window.playSaved(a.id));
     li.querySelector('.delete-btn').addEventListener('click', () => deleteAudio(a.id));
-      
+
     audioList.appendChild(li);
   });
-  
+
   if(audios.length>0){
     const li=document.createElement('li');
     li.style.justifyContent='center';
@@ -195,7 +185,6 @@ async function renderAudioList(){
   }
 }
 
-// --- Audio Logic ---
 function ensureAudio(){
   if(!audioCtx){
     audioCtx=new (window.AudioContext||window.webkitAudioContext)();
@@ -205,7 +194,7 @@ function ensureAudio(){
 
     gainNode = audioCtx.createGain();
     pannerNode = audioCtx.createStereoPanner(); 
-    
+
     applyAudioSettings();
   }
 }
@@ -215,12 +204,11 @@ function loadAudio(base64){
   audioEl=new Audio(base64);
   audioEl.loop=true;
   ensureAudio();
-  
+
   if(sourceNode)sourceNode.disconnect();
-  
+
   sourceNode=audioCtx.createMediaElementSource(audioEl);
-  
-  // Audio Chain: Source -> Analyser -> Gain -> Panner -> Destination
+
   sourceNode.connect(analyser);
   analyser.connect(gainNode);
   gainNode.connect(pannerNode);
@@ -231,7 +219,7 @@ function loadAudio(base64){
 }
 
 window.playSaved = async function(id) {
-    // This function fetches the base64 data using the safe ID
+
     const tx = db.transaction("audios", "readonly");
     const store = tx.objectStore("audios");
     const req = store.get(id);
@@ -245,15 +233,14 @@ document.getElementById('mic').onclick=async()=>{
   try {
     const mic=await navigator.mediaDevices.getUserMedia({audio:true});
     if(sourceNode)sourceNode.disconnect();
-    
+
     sourceNode=audioCtx.createMediaStreamSource(mic);
-    
-    // Audio Chain for Mic: Source -> Analyser -> Gain -> Panner -> Destination
+
     sourceNode.connect(analyser); 
     analyser.connect(gainNode);
     gainNode.connect(pannerNode);
     pannerNode.connect(audioCtx.destination); 
-    
+
     startVisualizer();
   } catch (e) {
     console.error("Could not access microphone:", e);
@@ -269,7 +256,6 @@ document.getElementById('play').onclick=()=>{
   }
 };
 
-// --- Visualizer Setup (No Change) ---
 const canvas=document.getElementById('gl');
 const ctx=canvas.getContext('2d');
 
@@ -291,7 +277,7 @@ function startVisualizer(){
 
     const color=colorPicker.value;
     const intensity=parseFloat(intensityControl.value)*0.5;
-    
+
     ctx.fillStyle='rgba(11, 12, 16, 0.2)';
     ctx.fillRect(0,0,canvas.width,canvas.height);
 
@@ -312,7 +298,6 @@ function startVisualizer(){
       const barHeight=amp*280*intensity;
       const angle=i*step;
 
-      // Outer Bar (Main Spectrum)
       const startX=cx+Math.cos(angle)*radius;
       const startY=cy+Math.sin(angle)*radius;
       const endX=cx+Math.cos(angle)*(radius+barHeight);
@@ -322,7 +307,6 @@ function startVisualizer(){
       ctx.lineTo(endX,endY);
       ctx.stroke();
 
-      // Inner Bar (Reflection/Beat Pulse)
       const r_inner=radius*0.6;
       const barHeight_i=amp*80*intensity;
       const endX_i=cx+Math.cos(angle)*(r_inner-barHeight_i);
@@ -334,8 +318,7 @@ function startVisualizer(){
     }
 
     ctx.shadowBlur=0; 
-    
-    // Central Pulse Circle 
+
     const avgAmp=dataArray.slice(0, 100).reduce((a,b)=>a+b,0)/100/255; 
     ctx.beginPath();
     ctx.arc(cx,cy,radius*0.2+avgAmp*80,0,Math.PI*2);
@@ -344,7 +327,6 @@ function startVisualizer(){
     ctx.fill();
     ctx.globalAlpha=1;
 
-    // Static central circle border
     ctx.beginPath();
     ctx.arc(cx, cy, radius*0.2, 0, Math.PI * 2);
     ctx.strokeStyle = color;
@@ -354,14 +336,13 @@ function startVisualizer(){
   radialDraw();
 }
 
-// --- Initialization ---
 openDB()
   .then(r => {
     db = r;
     renderAudioList();
   })
   .catch(e => {
-    // Error logged via req.onerror in openDB
+
     console.error("Initialization failed.");
   });
 </script></body></html>
