@@ -28,6 +28,23 @@
         background: var(--accent);
         cursor: pointer;
     }
+
+    input[type=color] {
+        -webkit-appearance: none;
+        appearance: none;
+        padding: 0;
+        border: none;
+        background: none;
+        height: 24px;
+        width: 100px;
+        cursor: pointer;
+    }
+    input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+    input[type=color]::-webkit-color-swatch { 
+        border: 2px solid rgba(255, 255, 255, 0.2); 
+        border-radius: 4px;
+    }
+
     .hint{font-size:12px;color:var(--muted)}
     .left-col{display:flex;gap:8px;align-items:center; flex-wrap: wrap;}
     #color_preset, #saved_audio_list {
@@ -56,7 +73,7 @@
         .controls { margin-left: 0; width: 100%; }
         .left-col { flex-wrap: wrap; gap: 4px; }
         .sliders { flex-wrap: wrap; gap: 8px; }
-        input[type=range] { width: 80px; }
+        input[type=range], input[type=color] { width: 80px; }
         label { margin-top: 4px; }
     }
   </style>
@@ -82,7 +99,11 @@
                 <option value="1">Cool Blues</option>
                 <option value="2">Warm Reds</option>
                 <option value="3">Neon Green</option>
+                <option value="4">Custom Color</option> 
             </select>
+          </label>
+          <label>Custom Color
+            <input type="color" id="custom_color" value="#66eebb"> 
           </label>
           <label>Intensity <input id="intensity" type="range" min="0" max="3" step="0.01" value="1.0"></label>
           <label>Speed <input id="speed" type="range" min="0" max="3" step="0.01" value="1.0"></label>
@@ -138,8 +159,17 @@ const volumeControl = document.getElementById('volume');
 const balanceControl = document.getElementById('balance');
 const resetBalanceBtn = document.getElementById('reset_balance'); 
 const colorPresetControl = document.getElementById('color_preset'); 
+const customColorControl = document.getElementById('custom_color'); 
 const SPECTRUM_SIZE = 512;
 const STORAGE_KEY = 'visualizerSettings';
+
+function hexToRgb(hex) {
+    const bigint = parseInt(hex.slice(1), 16);
+    const r = (bigint >> 16) & 255;
+    const g = (bigint >> 8) & 255;
+    const b = bigint & 255;
+    return [r / 255.0, g / 255.0, b / 255.0];
+}
 
 function getSettingsData() {
     return {
@@ -148,7 +178,8 @@ function getSettingsData() {
         color_speed: parseFloat(colorSpeedControl.value),
         volume: parseFloat(volumeControl.value),
         balance: parseFloat(balanceControl.value),
-        color_preset: parseFloat(colorPresetControl.value)
+        color_preset: parseFloat(colorPresetControl.value),
+        custom_color: customColorControl.value 
     };
 }
 
@@ -174,6 +205,7 @@ function loadSettingsLocal() {
             volumeControl.value = settings.volume;
             balanceControl.value = settings.balance;
             colorPresetControl.value = settings.color_preset;
+            customColorControl.value = settings.custom_color || '#66eebb'; 
 
             if(gainNode) gainNode.gain.value = settings.volume;
             if(pannerNode) pannerNode.pan.value = settings.balance;
@@ -421,6 +453,8 @@ uniform float u_intensity;
 uniform float u_speed;
 uniform float u_color_speed; 
 uniform float u_color_preset; 
+uniform vec3 u_custom_color; 
+uniform float u_fade; 
 varying vec2 v;
 
 float hash21(vec2 p){
@@ -490,13 +524,18 @@ void main(){
   float time_offset = fract(u_time * u_color_speed * 0.1);
   vec3 col = palette(clamp(0.5 + vcol, 0.0, 1.0), time_offset);
 
+  if (u_color_preset == 4.0) {
+
+      col = mix(u_custom_color * (0.2 + vcol), u_custom_color, 0.7); 
+  }
+
   float vig = smoothstep(0.9, 0.2, r);  
   col *= vig;
 
   float grain = (hash21(gl_FragCoord.xy + floor(t*10.0)) - 0.5) * 0.03;  
   col += grain;
 
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(col, 1.0 - u_fade); 
 }
 `;
 
@@ -523,6 +562,8 @@ const u_intensity = gl.getUniformLocation(prog, 'u_intensity');
 const u_speed = gl.getUniformLocation(prog, 'u_speed');
 const u_color_speed = gl.getUniformLocation(prog, 'u_color_speed'); 
 const u_color_preset = gl.getUniformLocation(prog, 'u_color_preset'); 
+const u_fade = gl.getUniformLocation(prog, 'u_fade');
+const u_custom_color = gl.getUniformLocation(prog, 'u_custom_color'); 
 
 const spectrumTex = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, spectrumTex);
@@ -709,7 +750,8 @@ async function handleDeleteSelectedAudio() {
 
 const controlsToSave = [
     intensityControl, speedControl, colorSpeedControl, 
-    colorPresetControl
+    colorPresetControl,
+    customColorControl 
 ];
 controlsToSave.forEach(control => {
     control.addEventListener('input', saveSettingsLocal);
@@ -769,6 +811,9 @@ function render(){
   const now = performance.now();
   const time = (now - start)/1000.0;
 
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
   if(analyser && dataArray && playing){
     analyser.getByteFrequencyData(dataArray);
 
@@ -790,6 +835,12 @@ function render(){
   gl.uniform1f(u_speed, parseFloat(speedControl.value));
   gl.uniform1f(u_color_speed, parseFloat(colorSpeedControl.value)); 
   gl.uniform1f(u_color_preset, parseFloat(colorPresetControl.value)); 
+
+  const rgb = hexToRgb(customColorControl.value);
+  gl.uniform3f(u_custom_color, rgb[0], rgb[1], rgb[2]);
+
+  const FADE_FACTOR = 0.05; 
+  gl.uniform1f(u_fade, FADE_FACTOR);
 
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   requestAnimationFrame(render);
